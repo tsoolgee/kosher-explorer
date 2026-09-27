@@ -10,6 +10,7 @@
     <ApplicationManifest>src\app.manifest</ApplicationManifest>
     <ApplicationIcon>src\app.ico</ApplicationIcon>
     <Version>0.0.1</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Product>סייר כשר</Product>
     <Company>tsoolgee</Company>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
