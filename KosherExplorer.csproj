@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>KosherExplorer</AssemblyName>
+    <RootNamespace>KosherExplorer</RootNamespace>
+    <ApplicationManifest>src\app.manifest</ApplicationManifest>
+    <ApplicationIcon>src\app.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <Product>סייר כשר</Product>
+    <Company>tsoolgee</Company>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <DebugType>none</DebugType>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.Management" />
+    <Reference Include="Microsoft.VisualBasic" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
+</Project>
