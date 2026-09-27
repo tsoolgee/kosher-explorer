@@ -18,6 +18,13 @@ namespace KosherExplorer
         public List<string> Exclusions { get; set; } = new List<string>();
     }
 
+    /// <summary>A drive the admin marked as part of the computer; identified by volume serial so a letter change doesn't matter.</summary>
+    public class InternalDrive
+    {
+        public string Serial { get; set; }
+        public string Name { get; set; }
+    }
+
     public class AppConfig
     {
         public List<RootDef> Roots { get; set; } = new List<RootDef>();
@@ -29,6 +36,7 @@ namespace KosherExplorer
         public bool Kiosk { get; set; }
         public bool PasswordToExit { get; set; }
         public bool AllDriveTypes { get; set; }   // also list non-USB secondary drives as devices (off = USB/removable only)
+        public List<InternalDrive> InternalDrives { get; set; } = new List<InternalDrive>();   // never shown as devices
         // per-station view preferences
         public string ViewMode { get; set; } = "Details";
         public bool CheckBoxes { get; set; } = true;
@@ -59,6 +67,7 @@ namespace KosherExplorer
                     if (c != null)
                     {
                         c.Roots = c.Roots ?? new List<RootDef>();
+                        c.InternalDrives = c.InternalDrives ?? new List<InternalDrive>();
                         foreach (var r in c.Roots) r.Exclusions = r.Exclusions ?? new List<string>();
                         return c;
                     }
@@ -197,13 +206,24 @@ namespace KosherExplorer
         public string Model;
         public string Format;
         public long Free, Total;
+        public string Serial;
         public string Display => (string.IsNullOrWhiteSpace(Label) ? (string.IsNullOrWhiteSpace(Model) ? "התקן נשלף" : Model) : Label)
                                  + " (" + Root.TrimEnd('\\') + ")";
     }
 
     static class DeviceScanner
     {
-        public static List<Device> Scan(AppConfig cfg)
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern bool GetVolumeInformation(string root, StringBuilder name, int nameSize, out uint serial, out uint maxComp, out uint flags, StringBuilder fs, int fsSize);
+
+        public static string SerialOf(string root)
+        {
+            try { return GetVolumeInformation(root, null, 0, out uint s, out _, out _, null, 0) ? s.ToString("X8") : null; }
+            catch { return null; }
+        }
+
+        /// <summary>includeInternal: also return drives the admin marked as internal (for the settings screen).</summary>
+        public static List<Device> Scan(AppConfig cfg, bool includeInternal = false)
         {
             var usb = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);  // "E:" -> model
             try
@@ -234,8 +254,11 @@ namespace KosherExplorer
                     if (string.Equals(d.Name, sys, StringComparison.OrdinalIgnoreCase)) continue;
                     // never expose a drive that hosts a public root as a writable device
                     if (cfg.Roots.Any(r => PathUtil.IsUnder(r.Path, d.Name))) continue;
+                    string serial = SerialOf(d.Name);
+                    if (!includeInternal && serial != null && cfg.InternalDrives.Any(x => x.Serial == serial)) continue;
                     list.Add(new Device
                     {
+                        Serial = serial,
                         Root = d.Name,
                         Label = d.VolumeLabel,
                         Model = isUsb ? usb[letter] : "",

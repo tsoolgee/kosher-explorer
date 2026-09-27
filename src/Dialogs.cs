@@ -125,7 +125,39 @@ namespace KosherExplorer
         readonly CheckBox chkAllDrives = new CheckBox { Text = "להציג גם כוננים קבועים נוספים כהתקנים (לא מומלץ)", AutoSize = true };
         readonly TextBox txtTitle = new TextBox();
         readonly Label lblExcl = new Label();
+        readonly CheckedListBox clbDrives = new CheckedListBox { CheckOnClick = true, IntegralHeight = false };
+        List<InternalDrive> internalDrives;
         public bool ExitRequested;
+
+        class DriveRow
+        {
+            public InternalDrive D; public bool Connected;
+            public override string ToString() => D.Name + (Connected ? "" : "  (לא מחובר כעת)");
+        }
+
+        void FillDrives()
+        {
+            internalDrives = internalDrives ?? cfg.InternalDrives.Select(x => new InternalDrive { Serial = x.Serial, Name = x.Name }).ToList();
+            // keep what's already ticked in the list before rebuilding it
+            if (clbDrives.Items.Count > 0)
+            {
+                internalDrives = clbDrives.CheckedItems.Cast<DriveRow>().Select(r => r.D).ToList();
+            }
+            clbDrives.Items.Clear();
+            var seen = new HashSet<string>();
+            List<Device> found;
+            try { found = DeviceScanner.Scan(cfg, true); } catch { found = new List<Device>(); }
+            foreach (var d in found.Where(d => d.Serial != null))
+            {
+                seen.Add(d.Serial);
+                var mine = internalDrives.FirstOrDefault(x => x.Serial == d.Serial);
+                string name = d.Display + (string.IsNullOrEmpty(d.Model) ? "" : " — " + d.Model) + ", " + PathUtil.Size(d.Total);
+                if (mine != null) mine.Name = name;
+                clbDrives.Items.Add(new DriveRow { D = mine ?? new InternalDrive { Serial = d.Serial, Name = name }, Connected = true }, mine != null);
+            }
+            foreach (var x in internalDrives.Where(x => !seen.Contains(x.Serial)))
+                clbDrives.Items.Add(new DriveRow { D = x, Connected = false }, true);
+        }
 
         public SettingsForm(AppConfig cfg)
         {
@@ -150,7 +182,7 @@ namespace KosherExplorer
             var g2 = new GroupBox { Text = "החרגות בתוך התיקיה שנבחרה (לא יוצגו ולא יועתקו)" };
             g2.SetBounds(12, 238, 736, 170);
             lbExcl.SetBounds(12, 26, 580, 132);
-            var bExDir = Btn(g2, "החרגת תיקיה…", 604, 26);
+            var bExDir = Btn(g2, "החרגת תיקיות…", 604, 26);
             var bExFile = Btn(g2, "החרגת קבצים…", 604, 62);
             var bExDel = Btn(g2, "הסרת החרגה", 604, 98);
             lblExcl.SetBounds(604, 134, 120, 24); lblExcl.ForeColor = Color.DimGray;
@@ -170,9 +202,21 @@ namespace KosherExplorer
             g3.Controls.AddRange(new Control[] { lt, txtTitle, chkKiosk, chkExitPwd, chkDelete, chkAuto, chkAllDrives, bPwd });
             Controls.Add(g3);
 
-            var bExit = AddButton("סגירת התוכנה", 12, 598, 140);
-            var bSave = AddButton("שמירה", 542, 598, 100);
-            var bCancel = AddButton("ביטול", 648, 598, 100, DialogResult.Cancel);
+            var g4 = new GroupBox { Text = "כוננים פנימיים: כוננים מסומנים לא יוצגו לציבור כהתקן (למשל דיסק USB שמחובר קבוע)" };
+            g4.SetBounds(12, 594, 736, 150);
+            clbDrives.SetBounds(12, 26, 580, 112);
+            var bDrvRefresh = Btn(g4, "רענון רשימה", 604, 26);
+            var lblDrv = new Label { Text = "הכונן מזוהה לפי המספר הסידורי שלו, כך ששינוי אות לא משנה.", ForeColor = Color.DimGray };
+            lblDrv.SetBounds(604, 62, 124, 76);
+            g4.Controls.Add(clbDrives); g4.Controls.Add(lblDrv);
+            Controls.Add(g4);
+            FillDrives();
+            bDrvRefresh.Click += (s, e) => FillDrives();
+
+            var bExit = AddButton("סגירת התוכנה", 12, 756, 140);
+            var bSave = AddButton("שמירה", 542, 756, 100);
+            var bCancel = AddButton("ביטול", 648, 756, 100, DialogResult.Cancel);
+            ClientSize = new Size(760, 798);
             CancelButton = bCancel;
 
             txtTitle.Text = cfg.WindowTitle;
@@ -282,10 +326,16 @@ namespace KosherExplorer
         void AddExclDir()
         {
             var r = Sel(); if (r == null) { Msg("בחרו קודם תיקיית אב ברשימה העליונה."); return; }
-            using (var d = new FolderBrowserDialog { Description = "בחרו תת-תיקיה שלא תוצג (בתוך " + r.Title + ")", SelectedPath = r.Path, ShowNewFolderButton = false })
+            if (!Directory.Exists(r.Path)) { Msg("התיקיה לא נמצאה."); return; }
+            var dirExcl = r.Exclusions.Where(Directory.Exists).ToList();
+            using (var d = new FolderCheckPicker(r, dirExcl))
             {
                 if (d.ShowDialog(this) != DialogResult.OK) return;
-                AddExcl(r, d.SelectedPath);
+                // folders: replace with what is ticked now; file exclusions stay as they are
+                r.Exclusions.RemoveAll(x => dirExcl.Any(y => PathUtil.Same(x, y)));
+                foreach (var p in d.Checked)
+                    if (!r.Exclusions.Any(x => PathUtil.Same(x, p))) r.Exclusions.Add(p);
+                FillExcl();
             }
         }
 
@@ -315,6 +365,7 @@ namespace KosherExplorer
             cfg.PasswordToExit = chkExitPwd.Checked;
             cfg.AllowDeviceDelete = chkDelete.Checked;
             cfg.AllDriveTypes = chkAllDrives.Checked;
+            cfg.InternalDrives = clbDrives.CheckedItems.Cast<DriveRow>().Select(r => r.D).ToList();
             try { ConfigStore.Save(cfg); }
             catch (Exception ex) { Msg("שמירת ההגדרות נכשלה:\n" + ex.Message); return; }
             try { if (ConfigStore.AutoStart != chkAuto.Checked) ConfigStore.AutoStart = chkAuto.Checked; } catch { }
@@ -322,6 +373,82 @@ namespace KosherExplorer
         }
 
         void Msg(string m) => MessageBox.Show(this, m, Text, MessageBoxButtons.OK, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1, MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign);
+    }
+
+    /// <summary>Tree of a root's subfolders with checkboxes: tick any number of folders to exclude.</summary>
+    class FolderCheckPicker : BaseDialog
+    {
+        readonly TreeView tree = new TreeView { CheckBoxes = true, HideSelection = false, RightToLeftLayout = true, Dock = DockStyle.Fill };
+        public List<string> Checked = new List<string>();
+
+        public FolderCheckPicker(RootDef r, List<string> existing)
+        {
+            Text = "החרגת תיקיות — " + r.Title;
+            FormBorderStyle = FormBorderStyle.Sizable; MinimumSize = new Size(380, 400);
+            ClientSize = new Size(480, 560);
+            var l = new Label { Text = "סמנו את כל התיקיות שלא יוצגו לציבור (אפשר כמה, גם מתיקיות שונות):", Dock = DockStyle.Top, Height = 40, Padding = new Padding(8, 10, 8, 0) };
+            var il = new ImageList { ColorDepth = ColorDepth.Depth32Bit, ImageSize = new Size(16, 16) };
+            il.Images.Add("dir", Native.ExtIcon("dir", true) ?? new Bitmap(16, 16));
+            tree.ImageList = il;
+            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 48 };
+            var lblCount = new Label { AutoSize = true, Location = new Point(8, 16), ForeColor = Color.DimGray };
+            var ok = new Button { Text = "אישור", DialogResult = DialogResult.OK }; ok.SetBounds(262, 9, 100, 30);
+            var c = new Button { Text = "ביטול", DialogResult = DialogResult.Cancel }; c.SetBounds(368, 9, 100, 30);
+            ok.Anchor = c.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            bottom.Controls.AddRange(new Control[] { lblCount, ok, c });
+            Controls.Add(tree); Controls.Add(bottom); Controls.Add(l);
+            AcceptButton = ok; CancelButton = c;
+
+            var root = new TreeNode(r.Title) { Tag = PathUtil.Norm(r.Path), ImageKey = "dir", SelectedImageKey = "dir" };
+            root.Nodes.Add(new TreeNode("..."));
+            tree.Nodes.Add(root);
+            tree.BeforeExpand += (s, e) => LoadChildren(e.Node);
+            tree.BeforeCheck += (s, e) => { if (e.Node == root) e.Cancel = true; };   // the root itself can't be excluded
+            tree.AfterCheck += (s, e) => lblCount.Text = CheckedNodes(tree.Nodes).Count() + " תיקיות מסומנות";
+            root.Expand();
+            // open the tree down to every existing exclusion and tick it
+            foreach (var p in existing)
+            {
+                var n = root;
+                while (n != null && !PathUtil.Same((string)n.Tag, p))
+                {
+                    n.Expand();
+                    n = n.Nodes.Cast<TreeNode>().FirstOrDefault(x => x.Tag is string xp && PathUtil.IsUnder(p, xp));
+                }
+                if (n != null && n != root) n.Checked = true;
+            }
+            lblCount.Text = CheckedNodes(tree.Nodes).Count() + " תיקיות מסומנות";
+            ok.Click += (s, e) => Checked = CheckedNodes(tree.Nodes).Select(n => (string)n.Tag).ToList();
+            Shown += (s, e) => Native.ExplorerTheme(tree);
+        }
+
+        static IEnumerable<TreeNode> CheckedNodes(TreeNodeCollection nodes)
+        {
+            foreach (TreeNode n in nodes)
+            {
+                if (n.Checked && n.Tag is string) yield return n;
+                foreach (var c in CheckedNodes(n.Nodes)) yield return c;
+            }
+        }
+
+        static void LoadChildren(TreeNode n)
+        {
+            if (n.Nodes.Count != 1 || n.Nodes[0].Tag != null) return;
+            n.Nodes.Clear();
+            try
+            {
+                foreach (var d in new DirectoryInfo((string)n.Tag).EnumerateDirectories()
+                                     .Where(d => (d.Attributes & FileAttributes.ReparsePoint) == 0)
+                                     .OrderBy(d => d.Name, Comparer<string>.Create(Native.StrCmpLogicalW)))
+                {
+                    var c = new TreeNode(d.Name) { Tag = d.FullName, ImageKey = "dir", SelectedImageKey = "dir" };
+                    if ((d.Attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0) c.ForeColor = Color.Gray;
+                    try { if (d.EnumerateDirectories().Any()) c.Nodes.Add(new TreeNode("...")); } catch { }
+                    n.Nodes.Add(c);
+                }
+            }
+            catch { }
+        }
     }
 
     static class InputBox
