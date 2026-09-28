@@ -26,7 +26,27 @@ namespace KosherExplorer
 
     class ExplorerList : ListView
     {
+        public event Action<ListViewItem> ItemDoubleClicked;
         public ExplorerList() { DoubleBuffered = true; }
+
+        protected override void WndProc(ref Message m)
+        {
+            // With checkboxes on, the native double-click toggles the item's check, which (synced to selection)
+            // deselects it before ItemActivate runs. Handle double-clicks on items ourselves.
+            if (m.Msg == 0x203 /*WM_LBUTTONDBLCLK*/)
+            {
+                int lp = m.LParam.ToInt32();
+                var hit = HitTest(new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF)));
+                if (hit.Item != null && hit.Location != ListViewHitTestLocations.StateImage)
+                {
+                    hit.Item.Selected = true;
+                    hit.Item.Focused = true;
+                    ItemDoubleClicked?.Invoke(hit.Item);
+                    return;
+                }
+            }
+            base.WndProc(ref m);
+        }
     }
 
     class MainForm : Form
@@ -277,6 +297,7 @@ namespace KosherExplorer
             list.SmallImageList = smallIL;
             list.HandleCreated += (s, e) => Native.ExplorerTheme(list);
             list.ItemActivate += (s, e) => OpenSelected();
+            list.ItemDoubleClicked += it => OpenItem(it);
             list.ColumnClick += (s, e) => { if (e.Column < colKeys.Length) SortBy(colKeys[e.Column], null); };
             list.ItemSelectionChanged += (s, e) =>
             {
@@ -1042,7 +1063,12 @@ namespace KosherExplorer
         void OpenSelected()
         {
             if (list.SelectedItems.Count == 0) return;
-            var tag = list.SelectedItems[0].Tag;
+            OpenItem(list.FocusedItem != null && list.FocusedItem.Selected ? list.FocusedItem : list.SelectedItems[0]);
+        }
+
+        void OpenItem(ListViewItem item)
+        {
+            var tag = item?.Tag;
             if (tag is Loc l) { Navigate(l); return; }
             if (!(tag is Entry e)) return;
             if (e.Trash != null) return;

@@ -9,7 +9,7 @@
     <RootNamespace>KosherExplorer</RootNamespace>
     <ApplicationManifest>src\app.manifest</ApplicationManifest>
     <ApplicationIcon>src\app.ico</ApplicationIcon>
-    <Version>0.0.2</Version>
+    <Version>0.0.3</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Product>סייר כשר</Product>
     <Company>tsoolgee</Company>

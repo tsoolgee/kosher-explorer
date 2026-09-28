@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -217,6 +217,31 @@ namespace KosherExplorer
             var bSave = AddButton("שמירה", 542, 756, 100);
             var bCancel = AddButton("ביטול", 648, 756, 100, DialogResult.Cancel);
             ClientSize = new Size(760, 798);
+
+            // The settings no longer fit on small/scaled screens, which hid the Save button.
+            // Groups go into a scrolling area; the buttons stay pinned at the bottom.
+            var content = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+            ClientSize = new Size(760 + SystemInformation.VerticalScrollBarWidth, 798);
+            var bar = new Panel { Width = 760, Dock = DockStyle.Bottom, Height = 50, BackColor = Color.FromArgb(245, 245, 245) };   // real width before docking, or right-anchored buttons drift off
+            foreach (var g in new Control[] { g1, g2, g3, g4 }) { Controls.Remove(g); content.Controls.Add(g); }
+            content.Controls.Add(new Label { Location = new Point(0, 744), Size = new Size(1, 8) });   // bottom margin
+            foreach (var b in new[] { bExit, bSave, bCancel })
+            {
+                Controls.Remove(b);
+                b.Top = 10;
+                b.Anchor = b == bExit ? AnchorStyles.Top | AnchorStyles.Left : AnchorStyles.Top | AnchorStyles.Right;
+                bar.Controls.Add(b);
+            }
+            Controls.Add(content);
+            Controls.Add(bar);
+            FormBorderStyle = FormBorderStyle.Sizable;
+            MinimumSize = new Size(560, 360);
+            Load += (s, e) =>
+            {
+                var wa = Screen.FromControl(Owner ?? this).WorkingArea;
+                if (Height > wa.Height) { Height = wa.Height; Top = wa.Top; }
+                if (Width > wa.Width) { Width = wa.Width; Left = wa.Left; }
+            };
             CancelButton = bCancel;
 
             txtTitle.Text = cfg.WindowTitle;
@@ -386,11 +411,11 @@ namespace KosherExplorer
             Text = "החרגת תיקיות — " + r.Title;
             FormBorderStyle = FormBorderStyle.Sizable; MinimumSize = new Size(380, 400);
             ClientSize = new Size(480, 560);
-            var l = new Label { Text = "סמנו את כל התיקיות שלא יוצגו לציבור (אפשר כמה, גם מתיקיות שונות):", Dock = DockStyle.Top, Height = 40, Padding = new Padding(8, 10, 8, 0) };
+            var l = new Label { Text = "סמנו את כל התיקיות שלא יוצגו לציבור (אפשר כמה), לחצו \"אישור\", ובחלון ההגדרות לחצו \"שמירה\".", Dock = DockStyle.Top, Height = 52, Padding = new Padding(8, 10, 8, 0) };
             var il = new ImageList { ColorDepth = ColorDepth.Depth32Bit, ImageSize = new Size(16, 16) };
             il.Images.Add("dir", Native.ExtIcon("dir", true) ?? new Bitmap(16, 16));
             tree.ImageList = il;
-            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 48 };
+            var bottom = new Panel { Width = ClientSize.Width, Dock = DockStyle.Bottom, Height = 48 };   // real width before docking, or right-anchored buttons drift off
             var lblCount = new Label { AutoSize = true, Location = new Point(8, 16), ForeColor = Color.DimGray };
             var ok = new Button { Text = "אישור", DialogResult = DialogResult.OK }; ok.SetBounds(262, 9, 100, 30);
             var c = new Button { Text = "ביטול", DialogResult = DialogResult.Cancel }; c.SetBounds(368, 9, 100, 30);
@@ -412,7 +437,7 @@ namespace KosherExplorer
                 var n = root;
                 while (n != null && !PathUtil.Same((string)n.Tag, p))
                 {
-                    n.Expand();
+                    LoadChildren(n); n.Expand();   // load now: BeforeExpand does not fire before the window exists
                     n = n.Nodes.Cast<TreeNode>().FirstOrDefault(x => x.Tag is string xp && PathUtil.IsUnder(p, xp));
                 }
                 if (n != null && n != root) n.Checked = true;
@@ -486,7 +511,7 @@ namespace KosherExplorer
             il.Images.Add("dir", Native.ExtIcon("dir", true) ?? new Bitmap(16, 16));
             tree.ImageList = il;
             tree.Dock = DockStyle.Fill;
-            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 48 };
+            var bottom = new Panel { Width = ClientSize.Width, Dock = DockStyle.Bottom, Height = 48 };   // real width before docking, or right-anchored buttons drift off
             var bNew = new Button { Text = "תיקיה חדשה" }; bNew.SetBounds(8, 9, 110, 30);
             var ok = new Button { Text = "העתקה לכאן", DialogResult = DialogResult.OK }; ok.SetBounds(196, 9, 110, 30);
             var c = new Button { Text = "ביטול", DialogResult = DialogResult.Cancel }; c.SetBounds(312, 9, 100, 30);
@@ -526,7 +551,7 @@ namespace KosherExplorer
                     string p = PathUtil.UniqueName((string)n.Tag, name.Trim());
                     if (!guard.DeviceAllowed(p)) return;
                     Directory.CreateDirectory(p);
-                    n.Nodes.Clear(); n.Nodes.Add(new TreeNode("...")); n.Collapse(); n.Expand();
+                    n.Nodes.Clear(); n.Nodes.Add(new TreeNode("...")); LoadChildren(n); n.Expand();
                     SelectPath(n, p);
                 }
                 catch (Exception ex) { MessageBox.Show(this, ex.Message); }
@@ -557,7 +582,7 @@ namespace KosherExplorer
             var n = from;
             while (n != null && !PathUtil.Same((string)n.Tag, path))
             {
-                n.Expand();
+                LoadChildren(n); n.Expand();
                 n = n.Nodes.Cast<TreeNode>().FirstOrDefault(c => c.Tag is string p && PathUtil.IsUnder(path, p));
             }
             if (n != null) { tree.SelectedNode = n; n.EnsureVisible(); }
