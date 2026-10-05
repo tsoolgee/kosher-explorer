@@ -37,6 +37,11 @@ namespace KosherExplorer
         public bool PasswordToExit { get; set; }
         public bool AllDriveTypes { get; set; }   // also list non-USB secondary drives as devices (off = USB/removable only)
         public List<InternalDrive> InternalDrives { get; set; } = new List<InternalDrive>();   // never shown as devices
+        public List<RootDef> WorkRoots { get; set; } = new List<RootDef>();   // folders the public may read AND write (e.g. the desktop)
+        public List<string> ShowExt { get; set; } = new List<string>();       // show only these file types (empty = all)
+        public bool ExtOnDevices { get; set; } = true;                        // the type filter also applies on devices
+        public bool OpenFiles { get; set; }                                   // double-click opens files in their own program
+        public List<string> OpenExt { get; set; } = new List<string>();       // types that may be opened (empty = every shown type)
         // per-station view preferences
         public string ViewMode { get; set; } = "Details";
         public bool CheckBoxes { get; set; } = true;
@@ -68,7 +73,10 @@ namespace KosherExplorer
                     {
                         c.Roots = c.Roots ?? new List<RootDef>();
                         c.InternalDrives = c.InternalDrives ?? new List<InternalDrive>();
-                        foreach (var r in c.Roots) r.Exclusions = r.Exclusions ?? new List<string>();
+                        c.WorkRoots = c.WorkRoots ?? new List<RootDef>();
+                        c.ShowExt = c.ShowExt ?? new List<string>();
+                        c.OpenExt = c.OpenExt ?? new List<string>();
+                        foreach (var r in c.Roots.Concat(c.WorkRoots)) r.Exclusions = r.Exclusions ?? new List<string>();
                         return c;
                     }
                 }
@@ -189,6 +197,12 @@ namespace KosherExplorer
             }
         }
 
+        /// <summary>"docx, .mp3 ;pdf" -> [".docx", ".mp3", ".pdf"]</summary>
+        public static List<string> ParseExt(string text) =>
+            (text ?? "").Split(new[] { ' ', ',', ';', '|', '\t' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim().TrimStart('*').ToLowerInvariant()).Where(x => x.Trim('.').Length > 0)
+                .Select(x => x.StartsWith(".") ? x : "." + x).Distinct().ToList();
+
         public static string Size(long b)
         {
             if (b < 1024) return b + " בתים";
@@ -207,7 +221,9 @@ namespace KosherExplorer
         public string Format;
         public long Free, Total;
         public string Serial;
-        public string Display => (string.IsNullOrWhiteSpace(Label) ? (string.IsNullOrWhiteSpace(Model) ? "התקן נשלף" : Model) : Label)
+        public bool IsFolder;    // a work folder (read/write) and not a physical device
+        public string Title;
+        public string Display => IsFolder ? Title : (string.IsNullOrWhiteSpace(Label) ? (string.IsNullOrWhiteSpace(Model) ? "התקן נשלף" : Model) : Label)
                                  + " (" + Root.TrimEnd('\\') + ")";
     }
 
@@ -253,7 +269,7 @@ namespace KosherExplorer
                     if (!ok || !d.IsReady) continue;
                     if (string.Equals(d.Name, sys, StringComparison.OrdinalIgnoreCase)) continue;
                     // never expose a drive that hosts a public root as a writable device
-                    if (cfg.Roots.Any(r => PathUtil.IsUnder(r.Path, d.Name))) continue;
+                    if (cfg.Roots.Concat(cfg.WorkRoots).Any(r => PathUtil.IsUnder(r.Path, d.Name))) continue;
                     string serial = SerialOf(d.Name);
                     if (!includeInternal && serial != null && cfg.InternalDrives.Any(x => x.Serial == serial)) continue;
                     list.Add(new Device
@@ -274,7 +290,7 @@ namespace KosherExplorer
 
         public static void Refresh(Device d)
         {
-            try { var di = new DriveInfo(d.Root); d.Free = di.AvailableFreeSpace; d.Total = di.TotalSize; } catch { }
+            try { var di = new DriveInfo(Path.GetPathRoot(d.Root)); d.Free = di.AvailableFreeSpace; d.Total = di.TotalSize; } catch { }
         }
     }
 
@@ -317,26 +333,98 @@ namespace KosherExplorer
             catch { return false; }
         }
 
-        public Device DeviceOf(string path)
+        /// <summary>Work folders as writable "spaces"; they behave like a device whose root is the folder.</summary>
+        public List<Device> WorkSpaces() =>
+            cfg.WorkRoots.Where(r => !string.IsNullOrEmpty(r.Path) && Directory.Exists(r.Path))
+               .Select(r => new Device { IsFolder = true, Root = PathUtil.Norm(r.Path), Title = r.Title }).ToList();
+
+        /// <summary>Everything the public may write to: work folders and connected devices.</summary>
+        public List<Device> Spaces()
         {
-            try { return Devices().FirstOrDefault(d => PathUtil.IsUnder(path, d.Root)); } catch { return null; }
+            var l = WorkSpaces();
+            try { l.AddRange(Devices()); } catch { }
+            return l;
         }
 
-        /// <summary>Path is a writable location on a connected device (outside its trash).</summary>
+        public Device DeviceOf(string path)
+        {
+            try { return Spaces().FirstOrDefault(d => PathUtil.IsUnder(path, d.Root)); } catch { return null; }
+        }
+
+        public RootDef WorkRootOf(string path) => cfg.WorkRoots.FirstOrDefault(r => !string.IsNullOrEmpty(r.Path) && PathUtil.IsUnder(path, r.Path));
+
+        /// <summary>Path is a writable location on a connected device or inside a work folder (outside its trash).</summary>
         public bool DeviceAllowed(string path)
         {
             var d = DeviceOf(path);
-            return d != null && !Trash.IsTrashPath(d.Root, path);
+            if (d == null || Trash.IsTrashPath(d.Root, path)) return false;
+            if (!d.IsFolder) return true;
+            var w = WorkRootOf(path);
+            if (w != null && IsExcluded(w, path)) return false;
+            try
+            {
+                // no hidden / link hop between the work folder and the path
+                string root = PathUtil.Norm(d.Root);
+                for (string p = PathUtil.Norm(path); !string.Equals(p, root, StringComparison.OrdinalIgnoreCase); p = Path.GetDirectoryName(p))
+                {
+                    if (p == null) return false;
+                    if (!File.Exists(p) && !Directory.Exists(p)) continue;   // a name about to be created
+                    var a = File.GetAttributes(p);
+                    if ((a & (FileAttributes.ReparsePoint | FileAttributes.Hidden | FileAttributes.System)) != 0) return false;
+                }
+                return true;
+            }
+            catch { return false; }
         }
 
-        /// <summary>Filter used while listing / copying: skip hidden, system, links and excluded items.</summary>
-        public bool ShowEntry(FileSystemInfo fi, RootDef root, string deviceRoot)
+        public bool IsSpaceRoot(string path) => Spaces().Any(d => PathUtil.Same(d.Root, path));
+
+        /// <summary>The file type may be shown (folders always are).</summary>
+        public bool ExtShown(string ext, bool onDevice)
+        {
+            if (cfg.ShowExt.Count == 0 || (onDevice && !cfg.ExtOnDevices)) return true;
+            return cfg.ShowExt.Contains((ext ?? "").ToLowerInvariant());
+        }
+
+        static readonly HashSet<string> neverOpen = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".exe", ".com", ".bat", ".cmd", ".msi", ".msp", ".mst", ".scr", ".pif", ".lnk", ".url", ".vbs", ".vbe", ".js", ".jse",
+            ".wsf", ".wsh", ".ws", ".ps1", ".psm1", ".psd1", ".hta", ".cpl", ".reg", ".jar", ".inf", ".application", ".appref-ms",
+            ".msc", ".scf", ".gadget", ".library-ms", ".settingcontent-ms", ".diagcab", ".appx", ".msix", ".appinstaller", ".dll",
+            ".sys", ".drv", ".ocx", ".chm", ".website", ".search-ms", ".searchconnector-ms", ".theme", ".themepack", ".rdp", ".xbap"
+        };
+
+        /// <summary>The file may be handed to its own program (Word etc.). Programs and scripts never are.</summary>
+        public bool CanOpen(string ext)
+        {
+            ext = (ext ?? "").ToLowerInvariant();
+            if (!cfg.OpenFiles || ext.Length < 2 || neverOpen.Contains(ext)) return false;
+            return cfg.OpenExt.Count == 0 || cfg.OpenExt.Contains(ext);
+        }
+
+        /// <summary>Filter used while listing / copying: skip hidden, system, links, excluded items and file types not shown.</summary>
+        public bool ShowEntry(FileSystemInfo fi, RootDef root, string deviceRoot, bool onDevice = false)
         {
             var a = fi.Attributes;
             if ((a & (FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint)) != 0) return false;
             if (root != null && IsExcluded(root, fi.FullName)) return false;
             if (deviceRoot != null && Trash.IsTrashPath(deviceRoot, fi.FullName)) return false;
+            if (fi is FileInfo && !ExtShown(fi.Extension, onDevice)) return false;
             return true;
+        }
+
+        /// <summary>The listing / copy filter for whatever area the path is in.</summary>
+        public Func<FileSystemInfo, bool> FilterFor(string anyPath)
+        {
+            var r = RootOf(anyPath);
+            if (r != null) return fi => ShowEntry(fi, r, null);
+            var d = DeviceOf(anyPath);
+            if (d != null)
+            {
+                string root = d.Root; bool onDevice = !d.IsFolder; var w = d.IsFolder ? WorkRootOf(root) : null;
+                return fi => ShowEntry(fi, w, root, onDevice);
+            }
+            return fi => false;
         }
     }
 

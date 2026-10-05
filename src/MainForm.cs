@@ -77,12 +77,17 @@ namespace KosherExplorer
         int largeSize;
         readonly ContextMenuStrip listMenu = new ContextMenuStrip(), treeMenu = new ContextMenuStrip();
 
-        ToolStripButton bBack, bFwd, bUp, bRefresh, bSend, bNewFolder, bCut, bCopy, bPaste, bRename, bDelete,
+        ToolStripButton bBack, bFwd, bUp, bRefresh, bSend, bCut, bCopy, bPaste, bRename, bDelete,
             bRestore, bEmpty, bEject, bChecks, bPreview, bDetails, bSelAll, bSelNone, bGear;
-        ToolStripDropDownButton bView, bSort;
+        ToolStripDropDownButton bView, bSort, bNew;
         ToolStripLabel lblReadOnly;
 
-        TreeNode nHome, nPublic, nDevices;
+        TreeNode nHome, nPublic, nWork, nDevices;
+
+        // the folder on screen is watched so files saved from Word etc. show up by themselves
+        FileSystemWatcher watcher;
+        readonly System.Windows.Forms.Timer watchTimer = new System.Windows.Forms.Timer { Interval = 700 };
+        bool busy;
         bool suppressTree, syncingCheck, editingLabel, allowClose;
 
         // clipboard (internal only — nothing from outside the program can be pasted)
@@ -141,6 +146,7 @@ namespace KosherExplorer
                 devices = DeviceScanner.Scan(cfg);
                 BuildTree();
                 Navigate(Loc.Home(), false);
+                Task.Run(CleanOpenTemp);
                 if (cfg.Roots.Count == 0) Status("ברוכים הבאים! כדי להתחיל, לחצו על ⚙ ובחרו את התיקיות שיוצגו לציבור.");
             };
             FormClosing += OnClosing;
@@ -213,7 +219,10 @@ namespace KosherExplorer
             bSend.Font = new Font(Font, FontStyle.Bold);
             bSend.ForeColor = Color.FromArgb(0, 100, 75);
             cmd.Items.Add(new ToolStripSeparator());
-            bNewFolder = Btn(cmd, "תיקיה חדשה", Glyphs.NewFolder, NewFolder, "תיקיה חדשה (Ctrl+Shift+N)");
+            bNew = new ToolStripDropDownButton("חדש") { Image = Glyphs.Get(Glyphs.Add, Color.FromArgb(40, 40, 40)), ImageScaling = ToolStripItemImageScaling.None, ToolTipText = "יצירת תיקיה או מסמך חדש כאן" };
+            cmd.Items.Add(bNew);
+            bNew.DropDownOpening += (s, e) => FillNewMenu(bNew.DropDownItems);
+            FillNewMenu(bNew.DropDownItems);
             bCut = Btn(cmd, "גזירה", Glyphs.Cut, () => ToClip(true), "גזירה (Ctrl+X)", false);
             bCopy = Btn(cmd, "העתקה", Glyphs.Copy, () => ToClip(false), "העתקה (Ctrl+C)", false);
             bPaste = Btn(cmd, "הדבקה", Glyphs.Paste, Paste, "הדבקה (Ctrl+V)", false);
@@ -258,6 +267,7 @@ namespace KosherExplorer
             AddSmall("home", Glyphs.Get(Glyphs.Home, Color.FromArgb(0, 95, 184), 16));
             AddSmall("public", Glyphs.Get(Glyphs.Shield, Color.FromArgb(150, 110, 0), 16));
             AddSmall("devices", Glyphs.Get(Glyphs.Usb, Color.FromArgb(0, 120, 90), 16));
+            AddSmall("work", Glyphs.Get(Glyphs.Rename, Color.FromArgb(0, 95, 184), 16));
             AddSmall("trash", Glyphs.Get(Glyphs.Delete, Color.FromArgb(90, 90, 90), 16));
             AddSmall("search", Glyphs.Get(Glyphs.Search, Color.FromArgb(40, 40, 40), 16));
             tree.ImageList = smallIL;
@@ -336,6 +346,7 @@ namespace KosherExplorer
             listMenu.Opening += ListMenuOpening;
             selectionTimer.Tick += (s, e) => { selectionTimer.Stop(); OnSelectionChanged(); };
             statusClear.Tick += (s, e) => { statusClear.Stop(); stMsg.Text = ""; };
+            watchTimer.Tick += (s, e) => { watchTimer.Stop(); OnFolderChanged(); };
 
             pane.Dock = DockStyle.Fill;
             pane.TypeOf = e => e == "dir" ? Native.TypeName("", true) : Native.TypeName(e, false);
@@ -480,6 +491,50 @@ namespace KosherExplorer
             UpdateCrumbs();
             SyncTree();
             UpdateCommands();
+            Watch(loc.Kind == LocKind.Public || loc.Kind == LocKind.Device ? loc.Path : null);
+        }
+
+        void Watch(string dir)
+        {
+            if (watcher != null && dir != null && PathUtil.Same(watcher.Path, dir)) return;
+            StopWatching();
+            if (dir == null) return;
+            try
+            {
+                watcher = new FileSystemWatcher(dir) { IncludeSubdirectories = false, SynchronizingObject = this,
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size };
+                FileSystemEventHandler h = (s, e) => { watchTimer.Stop(); watchTimer.Start(); };
+                watcher.Created += h; watcher.Deleted += h; watcher.Changed += h;
+                watcher.Renamed += (s, e) => { watchTimer.Stop(); watchTimer.Start(); };
+                watcher.Error += (s, e) => StopWatching();
+                watcher.EnableRaisingEvents = true;
+            }
+            catch { StopWatching(); }
+        }
+
+        void StopWatching()
+        {
+            watchTimer.Stop();
+            if (watcher == null) return;
+            try { watcher.EnableRaisingEvents = false; watcher.Dispose(); } catch { }
+            watcher = null;
+        }
+
+        /// <summary>Something changed in the folder on screen (e.g. Word saved a document): reload if what's shown differs.</summary>
+        void OnFolderChanged()
+        {
+            if (current.Kind != LocKind.Public && current.Kind != LocKind.Device) return;
+            if (busy || editingLabel || OwnedForms.Length > 0) { watchTimer.Start(); return; }
+            List<Entry> fresh;
+            try { fresh = Allowed(current) ? LoadEntries(current) : null; } catch { fresh = null; }
+            if (fresh == null) { Navigate(UpOf(current) ?? Loc.Home(), false); return; }
+            string Sig(IEnumerable<Entry> l) => string.Join("|", l.Select(x => x.Name + "*" + x.Size + "*" + x.Modified.Ticks).OrderBy(x => x, StringComparer.Ordinal));
+            if (Sig(fresh) == Sig(entries)) return;
+            string top = (list.View == View.Details || list.View == View.List) && list.TopItem?.Tag is Entry te ? te.Path : null;
+            RefreshView();
+            if (top != null)
+                foreach (ListViewItem it in list.Items)
+                    if (it.Tag is Entry en && PathUtil.Same(en.Path, top)) { try { list.TopItem = it; } catch { } break; }
         }
 
         bool Allowed(Loc l)
@@ -489,7 +544,7 @@ namespace KosherExplorer
                 case LocKind.Home: return true;
                 case LocKind.Public: return guard.PublicAllowed(l.Path) && Directory.Exists(l.Path);
                 case LocKind.Device: return guard.DeviceAllowed(l.Path) && Directory.Exists(l.Path);
-                case LocKind.Trash: return devices.Any(d => PathUtil.Same(d.Root, l.Path));
+                case LocKind.Trash: return guard.IsSpaceRoot(l.Path);
                 case LocKind.Search: return l.Base != null && Allowed(l.Base);
             }
             return false;
@@ -518,14 +573,7 @@ namespace KosherExplorer
             return new List<Entry>();
         }
 
-        Func<FileSystemInfo, bool> FilterFor(string anyPath)
-        {
-            var r = guard.RootOf(anyPath);
-            if (r != null) return fi => guard.ShowEntry(fi, r, null);
-            var d = guard.DeviceOf(anyPath);
-            if (d != null) { string root = d.Root; return fi => guard.ShowEntry(fi, null, root); }
-            return fi => false;
-        }
+        Func<FileSystemInfo, bool> FilterFor(string anyPath) => guard.FilterFor(anyPath);
 
         Loc LocFor(string path)
         {
@@ -686,8 +734,11 @@ namespace KosherExplorer
         void PopulateHome()
         {
             var gPub = new ListViewGroup("pub", "תיקיות לציבור");
+            var gWork = new ListViewGroup("work", "תיקיות עבודה (קריאה וכתיבה)");
             var gDev = new ListViewGroup("dev", "התקנים מחוברים (נגנים, דיסק און קי)");
-            list.Groups.Add(gPub); list.Groups.Add(gDev);
+            list.Groups.Add(gPub);
+            if (cfg.WorkRoots.Count > 0) list.Groups.Add(gWork);
+            list.Groups.Add(gDev);
             EnsureLarge("L:dir", () => Native.ShellImage(cfg.Roots.FirstOrDefault(r => Directory.Exists(r.Path))?.Path ?? Environment.GetFolderPath(Environment.SpecialFolder.Windows), largeSize, Native.SIIGBF_ICONONLY) ?? Native.ExtIcon("dir", false));
             foreach (var r in cfg.Roots)
             {
@@ -701,6 +752,16 @@ namespace KosherExplorer
             {
                 var it = new ListViewItem("לא הוגדרו תיקיות", gPub) { ForeColor = Color.Gray, ImageKey = "L:dir" };
                 it.SubItems.Add("מנהל: לחצו על ⚙ כדי לבחור תיקיות לציבור");
+                list.Items.Add(it);
+            }
+            foreach (var r in cfg.WorkRoots)
+            {
+                bool ok = Directory.Exists(r.Path);
+                string key = "L:work:" + r.Path;
+                if (ok) EnsureLarge(key, () => Native.ShellImage(r.Path, largeSize, Native.SIIGBF_ICONONLY) ?? Native.ExtIcon("dir", false));
+                var it = new ListViewItem(r.Title, gWork) { Tag = ok ? new Loc { Kind = LocKind.Device, Path = PathUtil.Norm(r.Path) } : null, ImageKey = ok ? key : "L:dir" };
+                it.SubItems.Add(ok ? "קריאה, כתיבה ויצירת מסמכים" : "התיקיה לא נמצאה");
+                if (!ok) it.ForeColor = Color.Firebrick;
                 list.Items.Add(it);
             }
             foreach (var d in devices)
@@ -982,12 +1043,16 @@ namespace KosherExplorer
         readonly System.Windows.Forms.Timer statusClear = CreateStatusTimer();
         static System.Windows.Forms.Timer CreateStatusTimer() => new System.Windows.Forms.Timer { Interval = 8000 };
 
-        Device CurrentDevice()
+        /// <summary>The writable space on screen: a device or a work folder.</summary>
+        Device CurrentSpace()
         {
             if (current.Effective == LocKind.Device || current.Kind == LocKind.Trash)
                 return guard.DeviceOf(current.Kind == LocKind.Search ? current.Base.Path : current.Path);
             return null;
         }
+
+        /// <summary>The physical device on screen (not a work folder).</summary>
+        Device CurrentDevice() => CurrentSpace() is Device d && !d.IsFolder ? d : null;
 
         List<Entry> SelectedEntries() => list.SelectedItems.Cast<ListViewItem>().Select(i => i.Tag as Entry).Where(e => e != null).ToList();
 
@@ -1009,7 +1074,8 @@ namespace KosherExplorer
                 if (hl.Kind == LocKind.Device)
                 {
                     var d = guard.DeviceOf(hl.Path);
-                    if (d != null) pane.ShowSummary(d.Display, new[] { ("סוג:", string.IsNullOrEmpty(d.Model) ? "התקן נשלף" : d.Model), ("מערכת קבצים:", d.Format), ("פנוי:", PathUtil.Size(d.Free)), ("גודל כולל:", PathUtil.Size(d.Total)) }, Native.ShellImage(d.Root, 96, Native.SIIGBF_ICONONLY));
+                    if (d != null && d.IsFolder) pane.ShowSummary(d.Display, new[] { ("הרשאה:", "קריאה, כתיבה ויצירת מסמכים") }, Native.ShellImage(d.Root, 96, Native.SIIGBF_ICONONLY));
+                    else if (d != null) pane.ShowSummary(d.Display, new[] { ("סוג:", string.IsNullOrEmpty(d.Model) ? "התקן נשלף" : d.Model), ("מערכת קבצים:", d.Format), ("פנוי:", PathUtil.Size(d.Free)), ("גודל כולל:", PathUtil.Size(d.Total)) }, Native.ShellImage(d.Root, 96, Native.SIIGBF_ICONONLY));
                 }
                 else
                 {
@@ -1036,9 +1102,9 @@ namespace KosherExplorer
             bSend.Visible = !inTrash;
             bSend.Enabled = sel.Count > 0 && (eff == LocKind.Public || eff == LocKind.Device) && anyOther;
             bSend.ToolTipText = devices.Count == 0 ? "חברו נגן או דיסק און קי כדי להעתיק אליו" : "העתקת הפריטים שנבחרו להתקן";
-            bNewFolder.Visible = bCut.Visible = bPaste.Visible = bRename.Visible = bDelete.Visible = !inTrash && current.Kind != LocKind.Home;
+            bNew.Visible = bCut.Visible = bPaste.Visible = bRename.Visible = bDelete.Visible = !inTrash && current.Kind != LocKind.Home;
             bCopy.Visible = !inTrash && current.Kind != LocKind.Home;
-            bNewFolder.Enabled = dev && current.Kind == LocKind.Device;
+            bNew.Enabled = dev && current.Kind == LocKind.Device;
             bCut.Enabled = dev && sel.Count > 0;
             bCopy.Enabled = sel.Count > 0 && (eff == LocKind.Public || dev);
             bPaste.Enabled = current.Kind == LocKind.Device && clip.Count > 0;
@@ -1078,9 +1144,58 @@ namespace KosherExplorer
                 if (target != null) Navigate(target);
                 return;
             }
-            // files are never handed to other programs — they open in the built-in preview
+            if (guard.CanOpen(e.Ext)) { OpenExternal(e); return; }
+            // other files are never handed to other programs — they open in the built-in preview
+            ShowPreview(e);
+        }
+
+        void ShowPreview(Entry e)
+        {
             if (split2.Panel2Collapsed || cfg.Pane == "Details") SetPane("Preview");
             pane.ShowEntry(e, true);
+        }
+
+        static readonly string openTemp = Path.Combine(Path.GetTempPath(), "KosherExplorer", "open");
+
+        /// <summary>Opens a file in its own program (Word etc.). A file from a read-only public folder opens as a read-only copy.</summary>
+        void OpenExternal(Entry e)
+        {
+            string path = e.Path;
+            bool writable = guard.DeviceAllowed(path);
+            if (!writable && !guard.PublicAllowed(path)) return;
+            if (!guard.CanOpen(Path.GetExtension(path)) || !File.Exists(path)) return;
+            try
+            {
+                if (!writable)
+                {
+                    string dir = Path.Combine(openTemp, Guid.NewGuid().ToString("N").Substring(0, 8));
+                    Directory.CreateDirectory(dir);
+                    string copy = Path.Combine(dir, Path.GetFileName(path));
+                    File.Copy(path, copy);
+                    File.SetAttributes(copy, FileAttributes.ReadOnly);
+                    path = copy;
+                }
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(path) });
+                Status("נפתח: " + e.Name + (writable ? "" : "  (עותק לקריאה בלבד)"));
+            }
+            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1155 /*no association*/)
+            {
+                Msg("אין במחשב תוכנה שפותחת קבצי " + e.Ext + ".\nהקובץ מוצג בתצוגה המקדימה.", MessageBoxIcon.Information);
+                ShowPreview(e);
+            }
+            catch (Exception ex) { Msg("פתיחת הקובץ נכשלה:\n" + ex.Message, MessageBoxIcon.Warning); }
+        }
+
+        /// <summary>Removes the read-only copies of earlier sessions (files still open in Word are skipped).</summary>
+        static void CleanOpenTemp()
+        {
+            try
+            {
+                if (!Directory.Exists(openTemp)) return;
+                foreach (var d in Directory.GetDirectories(openTemp))
+                    try { if (Directory.GetCreationTime(d) < DateTime.Now.AddHours(-12)) FileOps.ForceDelete(d); } catch { }
+            }
+            catch { }
         }
 
         void SelectAll()
@@ -1109,7 +1224,7 @@ namespace KosherExplorer
             clip = sel.Select(e => e.Path).ToList();
             clipCut = cut;
             foreach (ListViewItem it in list.Items) if (it.Tag is Entry en) it.ForeColor = cut && clip.Contains(en.Path) ? Color.Gray : SystemColors.WindowText;
-            Status((cut ? "נגזרו " : "הועתקו ללוח ") + clip.Count + " פריטים. עברו לתיקיה בהתקן ולחצו הדבקה (Ctrl+V).");
+            Status((cut ? "נגזרו " : "הועתקו ללוח ") + clip.Count + " פריטים. עברו לתיקיה בהתקן או בתיקיית עבודה ולחצו הדבקה (Ctrl+V).");
             UpdateCommands();
         }
 
@@ -1144,7 +1259,7 @@ namespace KosherExplorer
 
         void RunCopy(List<string> sources, string dest, bool move)
         {
-            if (!guard.DeviceAllowed(dest)) { Msg("אפשר להעתיק רק אל התקן מחובר.", MessageBoxIcon.Warning); return; }
+            if (!guard.DeviceAllowed(dest)) { Msg("אפשר להעתיק רק אל התקן מחובר או אל תיקיית עבודה.", MessageBoxIcon.Warning); return; }
             var valid = new List<string>();
             foreach (var s in sources)
             {
@@ -1162,7 +1277,9 @@ namespace KosherExplorer
             };
             pane.ReleaseFiles();
             ProgressForm pf;
-            using (pf = new ProgressForm(job)) pf.ShowDialog(this);
+            busy = true;
+            try { using (pf = new ProgressForm(job)) pf.ShowDialog(this); }
+            finally { busy = false; }
             string msg = pf.Cancelled ? "הפעולה בוטלה." :
                          (move ? "הועברו " : "הועתקו ") + pf.Done + " קבצים" + (pf.Skipped > 0 ? ", דולגו " + pf.Skipped : "") + " אל " + dev.Display + ".";
             Status(msg);
@@ -1185,17 +1302,54 @@ namespace KosherExplorer
                 Directory.CreateDirectory(p);
                 RefreshView();
                 ReloadTreeAt(current.Path);
-                foreach (ListViewItem it in list.Items)
-                    if (it.Tag is Entry e && PathUtil.Same(e.Path, p))
-                    {
-                        list.SelectedItems.Cast<ListViewItem>().ToList().ForEach(x => x.Selected = false);
-                        it.Selected = true; it.Focused = true; it.EnsureVisible();
-                        list.Focus();
-                        it.BeginEdit();
-                        break;
-                    }
+                EditNew(p);
             }
             catch (Exception ex) { Msg("יצירת התיקיה נכשלה:\n" + ex.Message, MessageBoxIcon.Error); }
+        }
+
+        /// <summary>Selects a freshly created item and opens its name for editing, like Explorer.</summary>
+        void EditNew(string p)
+        {
+            foreach (ListViewItem it in list.Items)
+                if (it.Tag is Entry e && PathUtil.Same(e.Path, p))
+                {
+                    list.SelectedItems.Cast<ListViewItem>().ToList().ForEach(x => x.Selected = false);
+                    it.Selected = true; it.Focused = true; it.EnsureVisible();
+                    list.Focus();
+                    it.BeginEdit();
+                    break;
+                }
+        }
+
+        void FillNewMenu(ToolStripItemCollection items)
+        {
+            items.Clear();
+            bool here = current.Kind == LocKind.Device && guard.DeviceAllowed(current.Path);
+            var f = new ToolStripMenuItem("תיקיה", Glyphs.Get(Glyphs.NewFolder, Color.FromArgb(40, 40, 40)), (s, e) => NewFolder()) { ShortcutKeyDisplayString = "Ctrl+Shift+N", Enabled = here };
+            items.Add(f);
+            var types = ShellNew.Available().Where(t => guard.ExtShown(t.Ext, CurrentDevice() != null)).ToList();
+            if (types.Count > 0) items.Add(new ToolStripSeparator());
+            foreach (var t in types)
+            {
+                var tt = t;
+                Image img = null;
+                try { img = Native.ExtIcon(t.Ext, true); } catch { }
+                items.Add(new ToolStripMenuItem(t.Name, img, (s, e) => NewFile(tt)) { Enabled = here });
+            }
+        }
+
+        void NewFile(ShellNew.Kind t)
+        {
+            if (current.Kind != LocKind.Device) return;
+            try
+            {
+                string p = PathUtil.UniqueName(current.Path, t.Name + " חדש" + t.Ext);
+                if (!guard.DeviceAllowed(p)) return;
+                ShellNew.Create(t, p);
+                RefreshView();
+                EditNew(p);
+            }
+            catch (Exception ex) { Msg("יצירת הקובץ נכשלה:\n" + ex.Message, MessageBoxIcon.Error); }
         }
 
         void Rename()
@@ -1222,7 +1376,7 @@ namespace KosherExplorer
             bool caseOnly = string.Equals(name, en.Name, StringComparison.OrdinalIgnoreCase);
             if (!caseOnly && (File.Exists(target) || Directory.Exists(target))) { Msg("כבר קיים פריט בשם \"" + name + "\".", MessageBoxIcon.Warning); return; }
             if (!en.IsDir && !string.Equals(Path.GetExtension(name), en.Ext, StringComparison.OrdinalIgnoreCase) &&
-                MessageBox.Show(this, "אם תשנו את סיומת הקובץ, ייתכן שהנגן לא יזהה אותו.\nלשנות בכל זאת?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBox.Show(this, "אם תשנו את סיומת הקובץ, ייתכן שהוא לא ייפתח כמו קודם.\nלשנות בכל זאת?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
                     MessageBoxDefaultButton.Button2, MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign) != DialogResult.Yes) return;
             try
             {
@@ -1309,6 +1463,7 @@ namespace KosherExplorer
         void Eject(string root)
         {
             pane.ReleaseFiles();
+            StopWatching();   // an open folder watch keeps the device busy
             Interlocked.Increment(ref thumbGen);
             while (thumbQueue.TryTake(out _)) { }
             if (guard.DeviceOf(current.Kind == LocKind.Search ? current.Base.Path ?? "" : current.Path ?? "") is Device cd && PathUtil.Same(cd.Root, root))
@@ -1333,7 +1488,7 @@ namespace KosherExplorer
             Loc baseLoc = current.Kind == LocKind.Search ? current.Base : current;
             if (baseLoc.Kind == LocKind.Trash) { Status("אי אפשר לחפש בסל."); return; }
             var dirs = baseLoc.Kind == LocKind.Home
-                ? cfg.Roots.Where(r => Directory.Exists(r.Path)).Select(r => r.Path).Concat(devices.Select(d => d.Root)).ToList()
+                ? cfg.Roots.Where(r => Directory.Exists(r.Path)).Select(r => r.Path).Concat(guard.Spaces().Select(d => d.Root)).ToList()
                 : new List<string> { baseLoc.Path };
             CancelSearchSilently();
             var cts = searchCts = new CancellationTokenSource();
@@ -1391,12 +1546,20 @@ namespace KosherExplorer
                 n.Nodes.Add(new TreeNode("..."));
                 nPublic.Nodes.Add(n);
             }
+            nWork = new TreeNode("תיקיות עבודה") { Tag = Loc.Home(), ImageKey = "work", SelectedImageKey = "work" };
+            foreach (var w in guard.WorkSpaces())
+            {
+                var n = new TreeNode(w.Display) { Tag = new Loc { Kind = LocKind.Device, Path = w.Root }, ImageKey = "dir", SelectedImageKey = "dir" };
+                n.Nodes.Add(new TreeNode("..."));
+                nWork.Nodes.Add(n);
+            }
             nDevices = new TreeNode("התקנים") { Tag = Loc.Home(), ImageKey = "devices", SelectedImageKey = "devices" };
             FillDeviceNodes();
             tree.Nodes.Add(nHome);
             tree.Nodes.Add(nPublic);
+            if (nWork.Nodes.Count > 0) tree.Nodes.Add(nWork);
             tree.Nodes.Add(nDevices);
-            nPublic.Expand(); nDevices.Expand();
+            nPublic.Expand(); nWork.Expand(); nDevices.Expand();
             tree.EndUpdate();
             suppressTree = false;
         }
@@ -1431,7 +1594,7 @@ namespace KosherExplorer
                     try { if (Directory.EnumerateDirectories(e.Path).Any()) c.Nodes.Add(new TreeNode("...")); } catch { }
                     n.Nodes.Add(c);
                 }
-                if (l.Kind == LocKind.Device && devices.Any(d => PathUtil.Same(d.Root, l.Path)) && cfg.AllowDeviceDelete)
+                if (l.Kind == LocKind.Device && guard.IsSpaceRoot(l.Path) && cfg.AllowDeviceDelete)
                     n.Nodes.Add(new TreeNode("סל מחזור") { Tag = new Loc { Kind = LocKind.Trash, Path = l.Path }, ImageKey = "trash", SelectedImageKey = "trash" });
             }
             catch { }
@@ -1476,7 +1639,7 @@ namespace KosherExplorer
                 if (l.Kind == LocKind.Home) target = nHome;
                 else
                 {
-                    var group = l.Kind == LocKind.Public ? nPublic : nDevices;
+                    var group = l.Kind == LocKind.Public ? nPublic : guard.DeviceOf(l.Path)?.IsFolder == true ? nWork : nDevices;
                     TreeNode n = group.Nodes.Cast<TreeNode>().FirstOrDefault(x => x.Tag is Loc xl && xl.Path != null && PathUtil.IsUnder(l.Path, xl.Path));
                     if (l.Kind == LocKind.Trash && n != null)
                     {
@@ -1507,9 +1670,10 @@ namespace KosherExplorer
             var n = tree.SelectedNode;
             if (!(n?.Tag is Loc l)) { e.Cancel = true; return; }
             treeMenu.Items.Add("פתיחה", null, (s, a) => Navigate(l));
-            if (l.Kind == LocKind.Device && devices.Any(d => PathUtil.Same(d.Root, l.Path)))
+            if (l.Kind == LocKind.Device && guard.IsSpaceRoot(l.Path))
             {
-                treeMenu.Items.Add("הוצאה בטוחה", Glyphs.Get(Glyphs.Usb, Color.FromArgb(0, 120, 90)), (s, a) => Eject(l.Path));
+                if (devices.Any(d => PathUtil.Same(d.Root, l.Path)))
+                    treeMenu.Items.Add("הוצאה בטוחה", Glyphs.Get(Glyphs.Usb, Color.FromArgb(0, 120, 90)), (s, a) => Eject(l.Path));
                 if (cfg.AllowDeviceDelete) treeMenu.Items.Add("סל מחזור", Glyphs.Get(Glyphs.Delete, Color.DimGray), (s, a) => Navigate(new Loc { Kind = LocKind.Trash, Path = l.Path }));
             }
         }
@@ -1656,7 +1820,7 @@ namespace KosherExplorer
                 if (list.SelectedItems.Count == 1 && list.SelectedItems[0].Tag is Loc l)
                 {
                     Add("פתיחה", Glyphs.Folder, () => Navigate(l));
-                    if (l.Kind == LocKind.Device) Add("הוצאה בטוחה", Glyphs.Usb, () => Eject(l.Path));
+                    if (l.Kind == LocKind.Device && devices.Any(d => PathUtil.Same(d.Root, l.Path))) Add("הוצאה בטוחה", Glyphs.Usb, () => Eject(l.Path));
                 }
                 else e.Cancel = true;
                 return;
@@ -1673,7 +1837,13 @@ namespace KosherExplorer
             }
             if (sel.Count > 0)
             {
-                if (sel.Count == 1) Add(sel[0].IsDir ? "פתיחה" : "תצוגה מקדימה", sel[0].IsDir ? Glyphs.Folder : Glyphs.Preview, OpenSelected).Font = new Font(listMenu.Font, FontStyle.Bold);
+                if (sel.Count == 1)
+                {
+                    var one = sel[0];
+                    bool ext = !one.IsDir && guard.CanOpen(one.Ext);
+                    Add(one.IsDir || ext ? "פתיחה" : "תצוגה מקדימה", one.IsDir ? Glyphs.Folder : ext ? Glyphs.Forward : Glyphs.Preview, OpenSelected).Font = new Font(listMenu.Font, FontStyle.Bold);
+                    if (ext) Add("תצוגה מקדימה", Glyphs.Preview, () => ShowPreview(one));
+                }
                 var send = Add("העתקה להתקן…", Glyphs.Send, SendToDevice, OtherDevices().Count > 0);
                 listMenu.Items.Add(new ToolStripSeparator());
                 if (dev) Add("גזירה", Glyphs.Cut, () => ToClip(true), true, "Ctrl+X");
@@ -1701,7 +1871,9 @@ namespace KosherExplorer
                 if (current.Kind == LocKind.Device)
                 {
                     Add("הדבקה", Glyphs.Paste, Paste, clip.Count > 0, "Ctrl+V");
-                    Add("תיקיה חדשה", Glyphs.NewFolder, NewFolder, true, "Ctrl+Shift+N");
+                    var nw = new ToolStripMenuItem("חדש", Glyphs.Get(Glyphs.Add, Color.FromArgb(40, 40, 40)));
+                    FillNewMenu(nw.DropDownItems);
+                    listMenu.Items.Add(nw);
                 }
                 Add("בחירת הכל", Glyphs.SelectAll, SelectAll, entries.Count > 0, "Ctrl+A");
             }
@@ -1723,7 +1895,7 @@ namespace KosherExplorer
                 case Keys.Control | Keys.F:
                 case Keys.F3: search.Focus(); search.SelectAll(); return true;
                 case Keys.Alt | Keys.Enter: SetPane(cfg.Pane == "Details" ? "None" : "Details"); return true;
-                case Keys.Control | Keys.Shift | Keys.N: if (bNewFolder.Enabled) NewFolder(); return true;
+                case Keys.Control | Keys.Shift | Keys.N: if (bNew.Enabled) NewFolder(); return true;
             }
             if (!inText)
             {

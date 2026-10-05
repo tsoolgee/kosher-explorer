@@ -126,6 +126,11 @@ namespace KosherExplorer
         readonly TextBox txtTitle = new TextBox();
         readonly Label lblExcl = new Label();
         readonly CheckedListBox clbDrives = new CheckedListBox { CheckOnClick = true, IntegralHeight = false };
+        readonly ListView lvWork = new ListView { View = View.Details, FullRowSelect = true, HideSelection = false, MultiSelect = false, HeaderStyle = ColumnHeaderStyle.Nonclickable };
+        readonly TextBox txtShowExt = new TextBox { RightToLeft = RightToLeft.No }, txtOpenExt = new TextBox { RightToLeft = RightToLeft.No };
+        readonly CheckBox chkExtDev = new CheckBox { Text = "הסינון חל גם על התקנים (נגנים, דיסק און קי)", AutoSize = true };
+        readonly CheckBox chkOpen = new CheckBox { Text = "לחיצה כפולה פותחת קבצים בתוכנה שלהם (וורד, נגן וכו')", AutoSize = true };
+        readonly List<RootDef> work;
         List<InternalDrive> internalDrives;
         public bool ExitRequested;
 
@@ -163,6 +168,7 @@ namespace KosherExplorer
         {
             this.cfg = cfg;
             roots = cfg.Roots.Select(r => new RootDef { Path = r.Path, Title = r.Title, Exclusions = r.Exclusions.ToList() }).ToList();
+            work = cfg.WorkRoots.Select(r => new RootDef { Path = r.Path, Title = r.Title, Exclusions = r.Exclusions.ToList() }).ToList();
             Text = "הגדרות מנהל — סייר כשר " + Application.ProductVersion;
             ClientSize = new Size(760, 640);
 
@@ -189,8 +195,38 @@ namespace KosherExplorer
             g2.Controls.Add(lbExcl); g2.Controls.Add(lblExcl);
             Controls.Add(g2);
 
+            var gW = new GroupBox { Text = "תיקיות עבודה: הציבור יכול לקרוא, לשמור, ליצור מסמכים חדשים ולשנות (למשל שולחן העבודה)" };
+            gW.SetBounds(12, 416, 736, 170);
+            lvWork.SetBounds(12, 26, 580, 132);
+            lvWork.Columns.Add("שם תצוגה", 180);
+            lvWork.Columns.Add("נתיב", 380);
+            var bWAdd = Btn(gW, "הוספה…", 604, 26);
+            var bWDesk = Btn(gW, "שולחן העבודה", 604, 62);
+            var bWRen = Btn(gW, "שינוי שם…", 604, 98);
+            var bWDel = Btn(gW, "הסרה", 604, 134);
+            gW.Controls.Add(lvWork);
+            Controls.Add(gW);
+
+            var gX = new GroupBox { Text = "סוגי קבצים" };
+            gX.SetBounds(12, 594, 736, 200);
+            var lShow = new Label { Text = "להציג רק קבצים מהסוגים (ריק = כל הקבצים):", AutoSize = true, Location = new Point(12, 26) };
+            txtShowExt.SetBounds(12, 48, 440, 26);
+            chkExtDev.Location = new Point(12, 80);
+            chkOpen.Location = new Point(12, 112);
+            var lOpen = new Label { Text = "לפתוח רק את הסוגים (ריק = כל הסוגים שמוצגים):", AutoSize = true, Location = new Point(32, 140) };
+            txtOpenExt.SetBounds(32, 162, 420, 26);
+            var lNote = new Label
+            {
+                Text = "כותבים סיומות עם רווח ביניהן, למשל:\ndocx doc pdf   או   mp3 wav\n\nתוכנות וסקריפטים (exe, bat, lnk וכו') אף פעם לא נפתחים.\nקובץ מתיקיה לציבור נפתח כעותק לקריאה בלבד, כך שהמקור לא משתנה.",
+                ForeColor = Color.DimGray
+            };
+            lNote.SetBounds(470, 26, 256, 160);
+            gX.Controls.AddRange(new Control[] { lShow, txtShowExt, chkExtDev, chkOpen, lOpen, txtOpenExt, lNote });
+            Controls.Add(gX);
+            chkOpen.CheckedChanged += (s, e) => txtOpenExt.Enabled = lOpen.Enabled = chkOpen.Checked;
+
             var g3 = new GroupBox { Text = "אפשרויות" };
-            g3.SetBounds(12, 416, 736, 170);
+            g3.SetBounds(12, 802, 736, 170);
             var lt = new Label { Text = "כותרת החלון:", AutoSize = true, Location = new Point(12, 28) };
             txtTitle.SetBounds(110, 25, 300, 26);
             chkKiosk.Location = new Point(12, 60);
@@ -203,7 +239,7 @@ namespace KosherExplorer
             Controls.Add(g3);
 
             var g4 = new GroupBox { Text = "כוננים פנימיים: כוננים מסומנים לא יוצגו לציבור כהתקן (למשל דיסק USB שמחובר קבוע)" };
-            g4.SetBounds(12, 594, 736, 150);
+            g4.SetBounds(12, 980, 736, 150);
             clbDrives.SetBounds(12, 26, 580, 112);
             var bDrvRefresh = Btn(g4, "רענון רשימה", 604, 26);
             var lblDrv = new Label { Text = "הכונן מזוהה לפי המספר הסידורי שלו, כך ששינוי אות לא משנה.", ForeColor = Color.DimGray };
@@ -221,10 +257,10 @@ namespace KosherExplorer
             // The settings no longer fit on small/scaled screens, which hid the Save button.
             // Groups go into a scrolling area; the buttons stay pinned at the bottom.
             var content = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
-            ClientSize = new Size(760 + SystemInformation.VerticalScrollBarWidth, 798);
+            ClientSize = new Size(760 + SystemInformation.VerticalScrollBarWidth, 860);
             var bar = new Panel { Width = 760, Dock = DockStyle.Bottom, Height = 50, BackColor = Color.FromArgb(245, 245, 245) };   // real width before docking, or right-anchored buttons drift off
-            foreach (var g in new Control[] { g1, g2, g3, g4 }) { Controls.Remove(g); content.Controls.Add(g); }
-            content.Controls.Add(new Label { Location = new Point(0, 744), Size = new Size(1, 8) });   // bottom margin
+            foreach (var g in new Control[] { g1, g2, gW, gX, g3, g4 }) { Controls.Remove(g); content.Controls.Add(g); }
+            content.Controls.Add(new Label { Location = new Point(0, 1130), Size = new Size(1, 8) });   // bottom margin
             foreach (var b in new[] { bExit, bSave, bCancel })
             {
                 Controls.Remove(b);
@@ -249,6 +285,29 @@ namespace KosherExplorer
             chkExitPwd.Checked = cfg.PasswordToExit;
             chkDelete.Checked = cfg.AllowDeviceDelete;
             chkAllDrives.Checked = cfg.AllDriveTypes;
+            txtShowExt.Text = string.Join(" ", cfg.ShowExt.Select(x => x.TrimStart('.')));
+            txtOpenExt.Text = string.Join(" ", cfg.OpenExt.Select(x => x.TrimStart('.')));
+            chkExtDev.Checked = cfg.ExtOnDevices;
+            chkOpen.Checked = cfg.OpenFiles;
+            txtOpenExt.Enabled = lOpen.Enabled = chkOpen.Checked;
+            FillWork();
+            bWAdd.Click += (s, e) =>
+            {
+                using (var d = new FolderBrowserDialog { Description = "בחרו תיקיה שהציבור יוכל לכתוב בה", ShowNewFolderButton = true })
+                    if (d.ShowDialog(this) == DialogResult.OK) AddWork(d.SelectedPath, null);
+            };
+            bWDesk.Click += (s, e) => AddWork(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "שולחן העבודה");
+            bWRen.Click += (s, e) =>
+            {
+                var r = lvWork.SelectedItems.Count > 0 ? (RootDef)lvWork.SelectedItems[0].Tag : null; if (r == null) return;
+                string t = InputBox.Show(this, "שם תצוגה", "השם שיוצג לציבור עבור התיקיה:", r.Title);
+                if (!string.IsNullOrWhiteSpace(t)) { r.Title = t.Trim(); FillWork(); }
+            };
+            bWDel.Click += (s, e) =>
+            {
+                var r = lvWork.SelectedItems.Count > 0 ? (RootDef)lvWork.SelectedItems[0].Tag : null;
+                if (r != null) { work.Remove(r); FillWork(); }
+            };
             try { chkAuto.Checked = ConfigStore.AutoStart; } catch { }
 
             FillRoots();
@@ -334,9 +393,45 @@ namespace KosherExplorer
                     Msg("התיקיה חופפת לתיקיה שכבר ברשימה (אחת מכילה את השנייה).");
                     return;
                 }
+                if (work.Any(r => PathUtil.IsUnder(p, r.Path) || PathUtil.IsUnder(r.Path, p)))
+                {
+                    Msg("התיקיה חופפת לתיקיית עבודה. תיקיה יכולה להיות או לקריאה בלבד או לכתיבה, לא שתיהן.");
+                    return;
+                }
                 roots.Add(new RootDef { Path = p, Title = Path.GetFileName(p.TrimEnd('\\')) is string n && n.Length > 0 ? n : p });
                 FillRoots(roots.Count - 1);
             }
+        }
+
+        void FillWork()
+        {
+            lvWork.Items.Clear();
+            foreach (var r in work)
+            {
+                var it = new ListViewItem(r.Title) { Tag = r };
+                it.SubItems.Add(r.Path);
+                if (!Directory.Exists(r.Path)) it.ForeColor = Color.Firebrick;
+                lvWork.Items.Add(it);
+            }
+        }
+
+        void AddWork(string path, string title)
+        {
+            if (string.IsNullOrEmpty(path) || !Directory.Exists(path)) { Msg("התיקיה לא נמצאה."); return; }
+            string p = PathUtil.Norm(path);
+            string win = PathUtil.Norm(Environment.GetFolderPath(Environment.SpecialFolder.Windows));
+            if (PathUtil.IsUnder(p, win) || PathUtil.IsUnder(win, p) ||
+                PathUtil.IsUnder(p, Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)) ||
+                PathUtil.IsUnder(p, Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)))
+            { Msg("אי אפשר לפתוח לכתיבה את תיקיית Windows, את Program Files או כונן שלם שמכיל אותן."); return; }
+            if (string.Equals(p, PathUtil.Norm(Path.GetPathRoot(p)), StringComparison.OrdinalIgnoreCase) &&
+                MessageBox.Show(this, "בחרתם כונן שלם. הציבור יוכל לשנות ולמחוק בו הכל. להמשיך?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2, MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign) != DialogResult.Yes) return;
+            if (work.Any(r => PathUtil.IsUnder(p, r.Path) || PathUtil.IsUnder(r.Path, p))) { Msg("התיקיה חופפת לתיקיית עבודה שכבר ברשימה."); return; }
+            if (roots.Any(r => PathUtil.IsUnder(p, r.Path) || PathUtil.IsUnder(r.Path, p)))
+            { Msg("התיקיה חופפת לתיקיה לציבור (קריאה בלבד). תיקיה יכולה להיות או לקריאה בלבד או לכתיבה, לא שתיהן."); return; }
+            work.Add(new RootDef { Path = p, Title = title ?? (Path.GetFileName(p.TrimEnd('\\')) is string n && n.Length > 0 ? n : p) });
+            FillWork();
         }
 
         void MoveRoot(int dir)
@@ -391,6 +486,11 @@ namespace KosherExplorer
             cfg.AllowDeviceDelete = chkDelete.Checked;
             cfg.AllDriveTypes = chkAllDrives.Checked;
             cfg.InternalDrives = clbDrives.CheckedItems.Cast<DriveRow>().Select(r => r.D).ToList();
+            cfg.WorkRoots = work;
+            cfg.ShowExt = PathUtil.ParseExt(txtShowExt.Text);
+            cfg.OpenExt = PathUtil.ParseExt(txtOpenExt.Text);
+            cfg.ExtOnDevices = chkExtDev.Checked;
+            cfg.OpenFiles = chkOpen.Checked;
             try { ConfigStore.Save(cfg); }
             catch (Exception ex) { Msg("שמירת ההגדרות נכשלה:\n" + ex.Message); return; }
             try { if (ConfigStore.AutoStart != chkAuto.Checked) ConfigStore.AutoStart = chkAuto.Checked; } catch { }
