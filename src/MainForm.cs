@@ -143,7 +143,7 @@ namespace KosherExplorer
             deviceTimer.Tick += (s, e) => { deviceTimer.Stop(); RescanDevices(); };
             Load += (s, e) =>
             {
-                devices = DeviceScanner.Scan(cfg);
+                devices = Limit(DeviceScanner.Scan(cfg), out _);
                 BuildTree();
                 Navigate(Loc.Home(), false);
                 Task.Run(CleanOpenTemp);
@@ -738,7 +738,7 @@ namespace KosherExplorer
             var gDev = new ListViewGroup("dev", "התקנים מחוברים (נגנים, דיסק און קי)");
             list.Groups.Add(gPub);
             if (cfg.WorkRoots.Count > 0) list.Groups.Add(gWork);
-            list.Groups.Add(gDev);
+            if (!cfg.HideDevices) list.Groups.Add(gDev);
             EnsureLarge("L:dir", () => Native.ShellImage(cfg.Roots.FirstOrDefault(r => Directory.Exists(r.Path))?.Path ?? Environment.GetFolderPath(Environment.SpecialFolder.Windows), largeSize, Native.SIIGBF_ICONONLY) ?? Native.ExtIcon("dir", false));
             foreach (var r in cfg.Roots)
             {
@@ -766,6 +766,7 @@ namespace KosherExplorer
             }
             foreach (var d in devices)
             {
+                if (cfg.HideDevices) break;
                 DeviceScanner.Refresh(d);
                 string key = "L:drv:" + d.Root;
                 EnsureLarge(key, () => Native.ShellImage(d.Root, largeSize, Native.SIIGBF_ICONONLY) ?? Native.PathIcon(d.Root, false));
@@ -773,7 +774,7 @@ namespace KosherExplorer
                 it.SubItems.Add(PathUtil.Size(d.Free) + " פנויים מתוך " + PathUtil.Size(d.Total));
                 list.Items.Add(it);
             }
-            if (devices.Count == 0)
+            if (devices.Count == 0 && !cfg.HideDevices)
             {
                 EnsureLarge("L:usb", () => Native.Fit(Glyphs.Get(Glyphs.Usb, Color.Silver, 40), largeSize, true));
                 var it = new ListViewItem("לא מחובר התקן", gDev) { ForeColor = Color.Gray, ImageKey = "L:usb" };
@@ -1032,7 +1033,7 @@ namespace KosherExplorer
             else stSel.Text = "";
             var d = CurrentDevice();
             if (d != null) { DeviceScanner.Refresh(d); stFree.Text = d.Display + ": " + PathUtil.Size(d.Free) + " פנויים"; }
-            else stFree.Text = devices.Count == 0 ? "לא מחובר התקן" : devices.Count == 1 ? "מחובר: " + devices[0].Display : "מחוברים " + devices.Count + " התקנים";
+            else stFree.Text = cfg.HideDevices ? "" : devices.Count == 0 ? "לא מחובר התקן" : devices.Count == 1 ? "מחובר: " + devices[0].Display : "מחוברים " + devices.Count + " התקנים";
         }
 
         void Status(string msg)
@@ -1099,7 +1100,7 @@ namespace KosherExplorer
             bFwd.Enabled = fwd.Count > 0;
             bUp.Enabled = current.Kind != LocKind.Home;
 
-            bSend.Visible = !inTrash;
+            bSend.Visible = !inTrash && !cfg.HideDevices;
             bSend.Enabled = sel.Count > 0 && (eff == LocKind.Public || eff == LocKind.Device) && anyOther;
             bSend.ToolTipText = devices.Count == 0 ? "חברו נגן או דיסק און קי כדי להעתיק אליו" : "העתקת הפריטים שנבחרו להתקן";
             bNew.Visible = bCut.Visible = bPaste.Visible = bRename.Visible = bDelete.Visible = !inTrash && current.Kind != LocKind.Home;
@@ -1558,7 +1559,7 @@ namespace KosherExplorer
             tree.Nodes.Add(nHome);
             tree.Nodes.Add(nPublic);
             if (nWork.Nodes.Count > 0) tree.Nodes.Add(nWork);
-            tree.Nodes.Add(nDevices);
+            if (!cfg.HideDevices) tree.Nodes.Add(nDevices);
             nPublic.Expand(); nWork.Expand(); nDevices.Expand();
             tree.EndUpdate();
             suppressTree = false;
@@ -1693,6 +1694,7 @@ namespace KosherExplorer
         }
 
         bool scanning;
+        List<string> lastIgnored = new List<string>();
         void RescanDevices()
         {
             if (scanning) { deviceTimer.Start(); return; }
@@ -1705,8 +1707,23 @@ namespace KosherExplorer
             });
         }
 
-        void ApplyDevices(List<Device> fresh)
+        /// <summary>Applies "hide devices" and "one device only". With one device, the one already shown stays; others wait until it is removed.</summary>
+        List<Device> Limit(List<Device> found, out List<Device> ignored)
         {
+            ignored = new List<Device>();
+            if (cfg.HideDevices) return new List<Device>();
+            if (!cfg.SingleDevice || found.Count <= 1) return found;
+            var keep = found.FirstOrDefault(d => devices.Any(o => PathUtil.Same(o.Root, d.Root))) ?? found[0];
+            ignored = found.Where(d => d != keep).ToList();
+            return new List<Device> { keep };
+        }
+
+        void ApplyDevices(List<Device> found)
+        {
+            var fresh = Limit(found, out var ignored);
+            if (ignored.Count > 0 && ignored.Any(d => !lastIgnored.Contains(d.Root, StringComparer.OrdinalIgnoreCase)))
+                Msg("אפשר לחבר רק התקן אחד בכל פעם.\n" + string.Join(", ", ignored.Select(d => d.Display)) + " לא יוצג עד שינתקו את " + fresh[0].Display + ".", MessageBoxIcon.Information);
+            lastIgnored = ignored.Select(d => d.Root).ToList();
             var oldRoots = devices.Select(d => d.Root).ToList();
             var newRoots = fresh.Select(d => d.Root).ToList();
             bool changed = !oldRoots.SequenceEqual(newRoots, StringComparer.OrdinalIgnoreCase);
@@ -1926,7 +1943,7 @@ namespace KosherExplorer
                 if (r != DialogResult.OK) return;
             }
             ApplyWindowMode();
-            devices = DeviceScanner.Scan(cfg);
+            devices = Limit(DeviceScanner.Scan(cfg), out _);
             back.Clear(); fwd.Clear();
             BuildTree();
             Navigate(Loc.Home(), false);

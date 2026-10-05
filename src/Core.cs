@@ -39,7 +39,9 @@ namespace KosherExplorer
         public List<InternalDrive> InternalDrives { get; set; } = new List<InternalDrive>();   // never shown as devices
         public List<RootDef> WorkRoots { get; set; } = new List<RootDef>();   // folders the public may read AND write (e.g. the desktop)
         public List<string> ShowExt { get; set; } = new List<string>();       // show only these file types (empty = all)
-        public bool ExtOnDevices { get; set; } = true;                        // the type filter also applies on devices
+        public bool ExtOnDevices { get; set; } = true;
+        public bool HideDevices { get; set; }                                 // no external devices at all (only the local folders)
+        public bool SingleDevice { get; set; }                                // only one device at a time, so nothing moves between two                        // the type filter also applies on devices
         public bool OpenFiles { get; set; }                                   // double-click opens files in their own program
         public List<string> OpenExt { get; set; } = new List<string>();       // types that may be opened (empty = every shown type)
         // per-station view preferences

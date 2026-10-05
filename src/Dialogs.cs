@@ -122,6 +122,8 @@ namespace KosherExplorer
         readonly CheckBox chkExitPwd = new CheckBox { Text = "סגירת התוכנה דורשת סיסמה", AutoSize = true };
         readonly CheckBox chkDelete = new CheckBox { Text = "לאפשר מחיקה בהתקנים (לסל המחזור של ההתקן)", AutoSize = true };
         readonly CheckBox chkAuto = new CheckBox { Text = "להפעיל את התוכנה עם עליית Windows", AutoSize = true };
+        readonly CheckBox chkHideDev = new CheckBox { Text = "להסתיר התקנים חיצוניים לגמרי (רק התיקיות שבמחשב)", AutoSize = true };
+        readonly CheckBox chkSingleDev = new CheckBox { Text = "לאפשר רק התקן אחד בכל פעם (מונע העברה מהתקן להתקן)", AutoSize = true };
         readonly CheckBox chkAllDrives = new CheckBox { Text = "להציג גם כוננים קבועים נוספים כהתקנים (לא מומלץ)", AutoSize = true };
         readonly TextBox txtTitle = new TextBox();
         readonly Label lblExcl = new Label();
@@ -226,7 +228,7 @@ namespace KosherExplorer
             chkOpen.CheckedChanged += (s, e) => txtOpenExt.Enabled = lOpen.Enabled = chkOpen.Checked;
 
             var g3 = new GroupBox { Text = "אפשרויות" };
-            g3.SetBounds(12, 802, 736, 170);
+            g3.SetBounds(12, 802, 736, 222);
             var lt = new Label { Text = "כותרת החלון:", AutoSize = true, Location = new Point(12, 28) };
             txtTitle.SetBounds(110, 25, 300, 26);
             chkKiosk.Location = new Point(12, 60);
@@ -235,11 +237,14 @@ namespace KosherExplorer
             chkAuto.Location = new Point(380, 60);
             chkAllDrives.Location = new Point(380, 86);
             var bPwd = new Button { Text = "שינוי סיסמה…" }; bPwd.SetBounds(380, 110, 140, 30);
-            g3.Controls.AddRange(new Control[] { lt, txtTitle, chkKiosk, chkExitPwd, chkDelete, chkAuto, chkAllDrives, bPwd });
+            chkHideDev.Location = new Point(12, 152);
+            chkSingleDev.Location = new Point(12, 178);
+            g3.Controls.AddRange(new Control[] { lt, txtTitle, chkKiosk, chkExitPwd, chkDelete, chkAuto, chkAllDrives, bPwd, chkHideDev, chkSingleDev });
+            chkHideDev.CheckedChanged += (s, e) => chkSingleDev.Enabled = !chkHideDev.Checked;
             Controls.Add(g3);
 
             var g4 = new GroupBox { Text = "כוננים פנימיים: כוננים מסומנים לא יוצגו לציבור כהתקן (למשל דיסק USB שמחובר קבוע)" };
-            g4.SetBounds(12, 980, 736, 150);
+            g4.SetBounds(12, 1032, 736, 150);
             clbDrives.SetBounds(12, 26, 580, 112);
             var bDrvRefresh = Btn(g4, "רענון רשימה", 604, 26);
             var lblDrv = new Label { Text = "הכונן מזוהה לפי המספר הסידורי שלו, כך ששינוי אות לא משנה.", ForeColor = Color.DimGray };
@@ -260,7 +265,7 @@ namespace KosherExplorer
             ClientSize = new Size(760 + SystemInformation.VerticalScrollBarWidth, 860);
             var bar = new Panel { Width = 760, Dock = DockStyle.Bottom, Height = 50, BackColor = Color.FromArgb(245, 245, 245) };   // real width before docking, or right-anchored buttons drift off
             foreach (var g in new Control[] { g1, g2, gW, gX, g3, g4 }) { Controls.Remove(g); content.Controls.Add(g); }
-            content.Controls.Add(new Label { Location = new Point(0, 1130), Size = new Size(1, 8) });   // bottom margin
+            content.Controls.Add(new Label { Location = new Point(0, 1182), Size = new Size(1, 8) });   // bottom margin
             foreach (var b in new[] { bExit, bSave, bCancel })
             {
                 Controls.Remove(b);
@@ -285,6 +290,9 @@ namespace KosherExplorer
             chkExitPwd.Checked = cfg.PasswordToExit;
             chkDelete.Checked = cfg.AllowDeviceDelete;
             chkAllDrives.Checked = cfg.AllDriveTypes;
+            chkHideDev.Checked = cfg.HideDevices;
+            chkSingleDev.Checked = cfg.SingleDevice;
+            chkSingleDev.Enabled = !chkHideDev.Checked;
             txtShowExt.Text = string.Join(" ", cfg.ShowExt.Select(x => x.TrimStart('.')));
             txtOpenExt.Text = string.Join(" ", cfg.OpenExt.Select(x => x.TrimStart('.')));
             chkExtDev.Checked = cfg.ExtOnDevices;
@@ -485,6 +493,8 @@ namespace KosherExplorer
             cfg.PasswordToExit = chkExitPwd.Checked;
             cfg.AllowDeviceDelete = chkDelete.Checked;
             cfg.AllDriveTypes = chkAllDrives.Checked;
+            cfg.HideDevices = chkHideDev.Checked;
+            cfg.SingleDevice = chkSingleDev.Checked;
             cfg.InternalDrives = clbDrives.CheckedItems.Cast<DriveRow>().Select(r => r.D).ToList();
             cfg.WorkRoots = work;
             cfg.ShowExt = PathUtil.ParseExt(txtShowExt.Text);
