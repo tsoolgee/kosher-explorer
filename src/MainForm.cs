@@ -78,8 +78,8 @@ namespace KosherExplorer
         readonly ContextMenuStrip listMenu = new ContextMenuStrip(), treeMenu = new ContextMenuStrip();
 
         ToolStripButton bBack, bFwd, bUp, bRefresh, bSend, bCut, bCopy, bPaste, bRename, bDelete,
-            bRestore, bEmpty, bEject, bChecks, bPreview, bDetails, bSelAll, bSelNone, bGear;
-        ToolStripDropDownButton bView, bSort, bNew;
+            bRestore, bEmpty, bChecks, bPreview, bDetails, bSelAll, bSelNone, bGear;
+        ToolStripDropDownButton bView, bSort, bNew, bEject;
         ToolStripLabel lblReadOnly;
 
         TreeNode nHome, nPublic, nWork, nDevices;
@@ -230,7 +230,20 @@ namespace KosherExplorer
             bDelete = Btn(cmd, "מחיקה", Glyphs.Delete, () => Delete(false), "מחיקה לסל המחזור של ההתקן (Delete)", false);
             bRestore = Btn(cmd, "שחזור", Glyphs.Restore, RestoreSelected, "שחזור הפריטים שנבחרו למקומם");
             bEmpty = Btn(cmd, "ריקון הסל", Glyphs.Delete, EmptyTrash, "מחיקה סופית של כל מה שבסל");
-            bEject = Btn(cmd, "הוצאה בטוחה", Glyphs.Usb, () => { var d = CurrentDevice(); if (d != null) Eject(d.Root); }, "הוצאה בטוחה של ההתקן לפני ניתוק");
+            bEject = new ToolStripDropDownButton("הוצאה בטוחה")
+            {
+                Image = Glyphs.Get(Glyphs.Usb, Color.FromArgb(0, 120, 90)),
+                ImageScaling = ToolStripItemImageScaling.None,
+                ToolTipText = "הוצאה בטוחה לפני ניתוק"
+            };
+            var miReplace = new ToolStripMenuItem("הוצא והחלף התקן") { ToolTipText = "מוציא את ההתקן. רק התקן שיחובר אחרי ההוצאה יוצג" };
+            var miAll = new ToolStripMenuItem("הוצא את כל ההתקנים") { ToolTipText = "מוציא את כל ההתקנים המחוברים, גם כאלה שלא מוצגים (למשל כרטיס זיכרון בטלפון)" };
+            miReplace.Click += (s, e) => { var d = CurrentDevice() ?? devices.FirstOrDefault(); if (d != null) Eject(d.Root); };
+            miAll.Click += (s, e) => EjectAll();
+            bEject.DropDownItems.Add(miReplace);
+            bEject.DropDownItems.Add(miAll);
+            bEject.DropDownOpening += (s, e) => { miReplace.Enabled = devices.Count > 0; miAll.Enabled = lastFound.Count > 0; };
+            cmd.Items.Add(bEject);
             cmd.Items.Add(new ToolStripSeparator());
 
             bSort = new ToolStripDropDownButton("מיון") { Image = Glyphs.Get(Glyphs.Sort, Color.FromArgb(40, 40, 40)), ImageScaling = ToolStripItemImageScaling.None };
@@ -1115,7 +1128,7 @@ namespace KosherExplorer
             bRestore.Visible = bEmpty.Visible = inTrash;
             bRestore.Enabled = sel.Count > 0;
             bEmpty.Enabled = entries.Count > 0;
-            bEject.Visible = CurrentDevice() != null;
+            bEject.Visible = !cfg.HideDevices && lastFound.Count > 0;
             lblReadOnly.Visible = eff == LocKind.Public && current.Kind != LocKind.Home;
             bSelAll.Enabled = bSelNone.Enabled = current.Kind != LocKind.Home;
         }
@@ -1461,8 +1474,12 @@ namespace KosherExplorer
             RefreshView();
         }
 
+        /// <summary>Ejects one device. With "one device only", every other drive that is connected right now
+        /// is blocked, so only a device plugged in after this can take its place.</summary>
         void Eject(string root)
         {
+            if (cfg.SingleDevice)
+                foreach (var d in lastFound.Where(d => !PathUtil.Same(d.Root, root))) blocked.Add(DeviceKey(d));
             pane.ReleaseFiles();
             StopWatching();   // an open folder watch keeps the device busy
             Interlocked.Increment(ref thumbGen);
@@ -1478,6 +1495,36 @@ namespace KosherExplorer
                 Status("ההתקן מוכן לניתוק. אפשר להוציא אותו.");
             }
             catch (Exception ex) { Msg("ההוצאה נכשלה. ייתכן שקובץ מההתקן עדיין פתוח.\n" + ex.Message, MessageBoxIcon.Warning); }
+            deviceTimer.Stop(); deviceTimer.Interval = 1500; deviceTimer.Start();
+        }
+
+        /// <summary>Ejects every connected drive, shown or not (e.g. a phone with a memory card shows up as two drives).</summary>
+        void EjectAll()
+        {
+            var roots = lastFound.Select(d => d.Root).ToList();
+            if (roots.Count == 0) return;
+            pane.ReleaseFiles();
+            StopWatching();
+            Interlocked.Increment(ref thumbGen);
+            while (thumbQueue.TryTake(out _)) { }
+            var l = current.Kind == LocKind.Search ? current.Base : current;
+            if (l.Kind == LocKind.Device || l.Kind == LocKind.Trash) Navigate(Loc.Home());
+            GC.Collect(); GC.WaitForPendingFinalizers();
+            var failed = new List<string>();
+            dynamic sh = null;
+            try { sh = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application")); } catch { }
+            foreach (var r in roots)
+            {
+                try
+                {
+                    if (!new DriveInfo(r).IsReady) continue;   // already gone with its sibling drive
+                    dynamic item = sh.NameSpace(17).ParseName(r);
+                    item.InvokeVerb("Eject");
+                }
+                catch { failed.Add(r.TrimEnd('\\')); }
+            }
+            if (failed.Count > 0) Msg("לא הצלחתי להוציא את " + string.Join(", ", failed) + ". ייתכן שקובץ מההתקן עדיין פתוח.", MessageBoxIcon.Warning);
+            else Status("כל ההתקנים מוכנים לניתוק. אפשר להוציא אותם.");
             deviceTimer.Stop(); deviceTimer.Interval = 1500; deviceTimer.Start();
         }
 
@@ -1710,19 +1757,38 @@ namespace KosherExplorer
         /// <summary>Applies "hide devices" and "one device only". With one device, the one already shown stays; others wait until it is removed.</summary>
         List<Device> Limit(List<Device> found, out List<Device> ignored)
         {
+            lastFound = found;
             ignored = new List<Device>();
+            // a blocked device that was unplugged may come back as a fresh one
+            blocked.RemoveWhere(k => !found.Any(d => DeviceKey(d) == k));
             if (cfg.HideDevices) return new List<Device>();
-            if (!cfg.SingleDevice || found.Count <= 1) return found;
-            var keep = found.FirstOrDefault(d => devices.Any(o => PathUtil.Same(o.Root, d.Root))) ?? found[0];
-            ignored = found.Where(d => d != keep).ToList();
+            if (!cfg.SingleDevice) return found;
+            var allowed = found.Where(d => !blocked.Contains(DeviceKey(d))).ToList();
+            ignored = found.Where(d => blocked.Contains(DeviceKey(d))).ToList();
+            if (allowed.Count == 0) return allowed;
+            var keep = allowed.FirstOrDefault(d => devices.Any(o => PathUtil.Same(o.Root, d.Root))) ?? allowed[0];
+            ignored.AddRange(allowed.Where(d => d != keep));
             return new List<Device> { keep };
         }
+
+        // Every drive seen in the last scan, including ones hidden by "one device only".
+        List<Device> lastFound = new List<Device>();
+        // Drives that were already connected when the shown device was ejected and replaced.
+        // They stay hidden until unplugged, so "replace" never jumps from one connected device to another.
+        readonly HashSet<string> blocked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        static string DeviceKey(Device d) => d.Serial ?? d.Root;
 
         void ApplyDevices(List<Device> found)
         {
             var fresh = Limit(found, out var ignored);
             if (ignored.Count > 0 && ignored.Any(d => !lastIgnored.Contains(d.Root, StringComparer.OrdinalIgnoreCase)))
-                Msg("אפשר לחבר רק התקן אחד בכל פעם.\n" + string.Join(", ", ignored.Select(d => d.Display)) + " לא יוצג עד שינתקו את " + fresh[0].Display + ".", MessageBoxIcon.Information);
+            {
+                string names = string.Join(", ", ignored.Select(d => d.Display));
+                if (fresh.Count > 0)
+                    Msg("אפשר לחבר רק התקן אחד בכל פעם.\n" + names + " לא יוצג עד שינתקו את " + fresh[0].Display + ".", MessageBoxIcon.Information);
+                else
+                    Msg(names + " היה מחובר כשההתקן הקודם הוצא, ולכן הוא לא יוצג.\nכדי להשתמש בו, נתקו אותו וחברו אותו מחדש.", MessageBoxIcon.Information);
+            }
             lastIgnored = ignored.Select(d => d.Root).ToList();
             var oldRoots = devices.Select(d => d.Root).ToList();
             var newRoots = fresh.Select(d => d.Root).ToList();
@@ -1730,7 +1796,7 @@ namespace KosherExplorer
             var added = fresh.Where(d => !oldRoots.Contains(d.Root, StringComparer.OrdinalIgnoreCase)).ToList();
             var removed = oldRoots.Where(r => !newRoots.Contains(r, StringComparer.OrdinalIgnoreCase)).ToList();
             devices = fresh;
-            if (!changed) { UpdateStatus(); return; }
+            if (!changed) { UpdateStatus(); UpdateCommands(); return; }
 
             suppressTree = true;
             tree.BeginUpdate();
