@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
@@ -71,7 +71,8 @@ namespace KosherExplorer
         readonly PreviewPane pane = new PreviewPane();
         readonly StatusStrip status = new StatusStrip();
         readonly ToolStripStatusLabel stCount = new ToolStripStatusLabel(), stSel = new ToolStripStatusLabel(),
-            stMsg = new ToolStripStatusLabel { Spring = true, TextAlign = ContentAlignment.MiddleLeft }, stFree = new ToolStripStatusLabel();
+            stMsg = new ToolStripStatusLabel { Spring = true, TextAlign = ContentAlignment.MiddleLeft }, stFree = new ToolStripStatusLabel(),
+            stBrand = new ToolStripStatusLabel("צול גאה · tsoolgee.uk") { IsLink = true, LinkBehavior = LinkBehavior.HoverUnderline, ToolTipText = "האתר של צול גאה: tsoolgee.uk", Margin = new Padding(12, 3, 4, 2) };
         readonly ImageList smallIL = new ImageList { ColorDepth = ColorDepth.Depth32Bit };
         ImageList largeIL;
         int largeSize;
@@ -387,7 +388,9 @@ namespace KosherExplorer
             status.RightToLeft = RightToLeft.Yes;
             status.BackColor = Color.FromArgb(248, 248, 248);
             status.SizingGrip = false;
-            status.Items.AddRange(new ToolStripItem[] { stCount, stSel, stMsg, stFree });
+            status.Items.AddRange(new ToolStripItem[] { stCount, stSel, stMsg, stFree, stBrand });
+            stBrand.LinkColor = Color.FromArgb(0, 102, 204);
+            stBrand.Click += (s, e) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://tsoolgee.uk") { UseShellExecute = true }); } catch { } };
 
             Controls.Add(split);
             Controls.Add(cmdLine);

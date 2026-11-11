@@ -171,7 +171,7 @@ namespace KosherExplorer
             this.cfg = cfg;
             roots = cfg.Roots.Select(r => new RootDef { Path = r.Path, Title = r.Title, Exclusions = r.Exclusions.ToList() }).ToList();
             work = cfg.WorkRoots.Select(r => new RootDef { Path = r.Path, Title = r.Title, Exclusions = r.Exclusions.ToList() }).ToList();
-            Text = "הגדרות מנהל — סייר כשר " + Application.ProductVersion;
+            Text = "הגדרות מנהל — סייר כשר " + Application.ProductVersion + " · צול גאה";
             ClientSize = new Size(760, 640);
 
             var g1 = new GroupBox { Text = "תיקיות אב שיוצגו לציבור (קריאה והעתקה בלבד)" };

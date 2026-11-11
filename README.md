@@ -67,3 +67,6 @@
 ```
 dotnet build -c Release -o dist
 ```
+
+---
+נבנה על ידי **צול גאה** · [tsoolgee.uk](https://tsoolgee.uk)

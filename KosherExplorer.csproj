@@ -9,10 +9,12 @@
     <RootNamespace>KosherExplorer</RootNamespace>
     <ApplicationManifest>src\app.manifest</ApplicationManifest>
     <ApplicationIcon>src\app.ico</ApplicationIcon>
-    <Version>0.0.6</Version>
+    <Version>0.0.7</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Product>סייר כשר</Product>
-    <Company>tsoolgee</Company>
+    <Company>צול גאה (TSOOL GEE)</Company>
+    <Copyright>© צול גאה · tsoolgee.uk</Copyright>
+    <Authors>צול גאה</Authors>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <DebugType>none</DebugType>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
